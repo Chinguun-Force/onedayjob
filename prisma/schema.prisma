@@ -1,0 +1,136 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  EMPLOYEE
+}
+
+enum NotificationType {
+  PROFILE_UPDATED
+  NEW_EMPLOYEE_ADDED
+}
+
+enum Channel {
+  IN_APP
+}
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  FAILED
+  DONE
+}
+
+enum RecipientStatus {
+  UNREAD
+  READ
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  role         Role     @default(EMPLOYEE)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  createdNotifications Notification[]          @relation("CreatedBy")
+  recipients           NotificationRecipient[]
+}
+
+model NotificationTemplate {
+  id        String           @id @default(cuid())
+  type      NotificationType @unique
+  title     String
+  body      String
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+}
+
+model Notification {
+  id          String           @id @default(cuid())
+  type        NotificationType
+  channel     Channel          @default(IN_APP)
+  payloadJson Json?
+  createdAt   DateTime         @default(now())
+
+  createdById String?
+  createdBy   User?   @relation("CreatedBy", fields: [createdById], references: [id])
+
+  recipients NotificationRecipient[]
+  jobs       QueueJob[]
+
+  @@index([type, channel, createdAt])
+}
+
+model NotificationRecipient {
+  id             String          @id @default(cuid())
+  notificationId String
+  userId         String
+  status         RecipientStatus @default(UNREAD)
+  deliveredAt    DateTime?
+  readAt         DateTime?
+  createdAt      DateTime        @default(now())
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([notificationId, userId])
+  @@index([userId, status, createdAt])
+}
+
+model QueueJob {
+  id             String    @id @default(cuid())
+  notificationId String
+  status         JobStatus @default(PENDING)
+  attempts       Int       @default(0)
+  lastError      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+}
+scalar JSON
+
+type Notification {
+  id: ID!
+  type: NotificationType!
+  channel: Channel!
+  payloadJson: JSON
+  createdAt: String!
+}
+
+type NotificationRecipient {
+  id: ID!
+  status: RecipientStatus!
+  deliveredAt: String
+  readAt: String
+  createdAt: String!
+  notification: Notification!
+}
+
+input SendNotificationInput {
+  type: NotificationType!
+  targetRole: Role!
+  payload: JSON
+}
+
+type Query {
+  myNotifications: [NotificationRecipient!]!
+}
+
+type Mutation {
+  sendNotification(input: SendNotificationInput!): Boolean!
+  markAllRead: Int!
+  markRead(recipientId: ID!): Boolean!
+}
