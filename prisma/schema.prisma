@@ -100,37 +100,3 @@ model QueueJob {
 
   @@index([status, createdAt])
 }
-scalar JSON
-
-type Notification {
-  id: ID!
-  type: NotificationType!
-  channel: Channel!
-  payloadJson: JSON
-  createdAt: String!
-}
-
-type NotificationRecipient {
-  id: ID!
-  status: RecipientStatus!
-  deliveredAt: String
-  readAt: String
-  createdAt: String!
-  notification: Notification!
-}
-
-input SendNotificationInput {
-  type: NotificationType!
-  targetRole: Role!
-  payload: JSON
-}
-
-type Query {
-  myNotifications: [NotificationRecipient!]!
-}
-
-type Mutation {
-  sendNotification(input: SendNotificationInput!): Boolean!
-  markAllRead: Int!
-  markRead(recipientId: ID!): Boolean!
-}
