@@ -15,6 +15,9 @@ enum Role {
 enum NotificationType {
   PROFILE_UPDATED
   NEW_EMPLOYEE_ADDED
+  ANNOUNCEMENT
+  PASSWORD_CHANGE
+  ROLE_CHANGE
 }
 
 enum Channel {
@@ -34,13 +37,15 @@ enum RecipientStatus {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String
-  name         String?
-  role         Role     @default(EMPLOYEE)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                 String   @id @default(cuid())
+  email              String   @unique
+  passwordHash       String
+  name               String?
+  role               Role     @default(EMPLOYEE)
+  mustChangePassword Boolean  @default(true)
+  passwordChangedAt  DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   createdNotifications Notification[]          @relation("CreatedBy")
   recipients           NotificationRecipient[]

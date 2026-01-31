@@ -14,7 +14,7 @@ export function startQueuePoller() {
   setInterval(async () => {
     try {
       const res = await processQueueOnce();
-      if (res.processed > 0) {
+      if (res?.processed && res.processed > 0) {
         console.log("🔄 Queue processed:", res.processed);
       }
     } catch (e) {

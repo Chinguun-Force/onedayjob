@@ -2,29 +2,43 @@ import { prisma } from "@/lib/prisma";
 
 const MAX_ATTEMPTS = 3;
 
-
+  const SOCKET_SERVER_URL = process.env.SOCKET_SERVER_URL ?? "http://localhost:4000";
+const SOCKET_INTERNAL_TOKEN = process.env.SOCKET_INTERNAL_TOKEN ?? "dev-token";
 async function deliverInApp(notificationId: string) {
   const notification = await prisma.notification.findUnique({
     where: { id: notificationId },
-    include: { recipients: { select: { userId: true } } },
+    include: {
+      recipients: { select: { userId: true } },
+    },
   });
 
-  if (!notification) {
-    return { ok: false as const, error: "Notification not found" };
-  }
+  if (!notification) return { ok: false, error: "Notification not found" };
 
+  // хэрэгтэй payload (чи хүссэнээрээ өргөжүүлж болно)
+  const payload = {
+    id: notification.id,
+    type: notification.type,
+    createdAt: notification.createdAt,
+  };
+
+  // recipient бүр дээр socket server руу HTTP notify
   for (const r of notification.recipients) {
-    global._io?.to(`user:${r.userId}`).emit("notification", {
-  id: notification.id,
-  type: notification.type,
-  createdAt: notification.createdAt,
-  title: notification.type === "PROFILE_UPDATED"
-    ? "Profile updated"
-    : "New employee added",
-});
+    const resp = await fetch(`${SOCKET_SERVER_URL}/internal/notify`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${SOCKET_INTERNAL_TOKEN}`,
+      },
+      body: JSON.stringify({ userId: r.userId, payload }),
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      return { ok: false, error: `notify failed: ${resp.status} ${text}` };
+    }
   }
 
-  return { ok: true as const };
+  return { ok: true };
 }
 
 export async function processQueueOnce() {
@@ -61,12 +75,21 @@ export async function processQueueOnce() {
 
     // 2) Transaction дууссаны ДАРАА socket emit хийнэ
     const res = await deliverInApp(job.notificationId);
-    if (!res.ok) {
-      // emit талдаа алдаа гарвал job-г DONE хэвээр үлдээж болно (demo дээр ok)
-      console.warn("deliverInApp failed:", res.error);
-    }
 
-    return { processed: 1 };
+if (res.ok) {
+  await prisma.$transaction([
+    prisma.notificationRecipient.updateMany({
+      where: { notificationId: job.notificationId, deliveredAt: null },
+      data: { deliveredAt: new Date() },
+    }),
+    prisma.queueJob.update({
+      where: { id: job.id },
+      data: { status: "DONE" },
+    }),
+  ]);
+
+  return { processed: 1 };
+}
   } catch (e: any) {
     const nextAttempts = job.attempts + 1;
     const isFinal = nextAttempts >= MAX_ATTEMPTS;

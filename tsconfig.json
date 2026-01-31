@@ -35,7 +35,8 @@
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
     "**/*.mts",
-    "types/**/*.d.ts"
+    "types/**/*.d.ts",
+    "server/socket-server.js"
   ],
   "exclude": [
     "node_modules"
