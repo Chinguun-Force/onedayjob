@@ -74,6 +74,13 @@ const resolvers = {
         include: { notification: true },
       });
     },
+    canSignupAdmin: async () => {
+    const adminCount = await prisma.user.count({
+      where: { role: "ADMIN" },
+    });
+
+    return adminCount === 0;
+    }
   },
 
   Mutation: {
@@ -240,6 +247,35 @@ const resolvers = {
 
       return true;
     },
+    bootstrapAdminSignup: async (
+  _: any,
+  args: { email: string; password: string },
+) => {
+  const adminCount = await prisma.user.count({
+    where: { role: "ADMIN" },
+  });
+
+  if (adminCount > 0) {
+    throw new Error("Admin already exists");
+  }
+
+  if (args.password.length < 8) {
+    throw new Error("Password too short");
+  }
+
+  const hash = await bcrypt.hash(args.password, 10);
+
+  await prisma.user.create({
+    data: {
+      email: args.email,
+      passwordHash: hash,
+      role: "ADMIN",
+      mustChangePassword: false,
+    },
+  });
+
+  return true;
+}
   },
 };
 

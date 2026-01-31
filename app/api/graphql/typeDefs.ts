@@ -99,6 +99,7 @@ export const typeDefs = `#graphql
     templates: [NotificationTemplate!]!
     template(type: NotificationType!): NotificationTemplate
     myNotifications: [NotificationRecipient!]!
+    canSignupAdmin: Boolean!
   }
 
   type Mutation {
@@ -112,5 +113,6 @@ export const typeDefs = `#graphql
     markRead(recipientId: ID!): Boolean!
     markAllRead: Int!
     changeMyPassword(oldPassword: String!, newPassword: String!): Boolean!
+    bootstrapAdminSignup(email: String!, password: String!): Boolean!
   }
 `;
