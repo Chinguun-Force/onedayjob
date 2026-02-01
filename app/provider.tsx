@@ -13,37 +13,39 @@ const client = new ApolloClient({
 
 export function Providers({ children }: { children: React.ReactNode }) {
     useEffect(() => {
-        let active = true;
+        let isMounted = true;
 
-        (async () => {
+        async function initializeSocket() {
             try {
-                const s = await getSocket();
-                if (!active) return;
+                const socket = await getSocket();
+                if (!isMounted) return;
 
-                // Notification
-                s.off("notification:new"); // prevent duplicate listeners
-                s.on("notification:new", (payload) => {
-                    toast(payload?.title || "New notification", {
+                // Notification handler
+                socket.off("notification:new");
+                socket.on("notification:new", (payload) => {
+                    toast(payload?.title || "Notification", {
                         description: payload?.message || payload?.body || "",
                     });
                     window.dispatchEvent(new CustomEvent("notif:new", { detail: payload }));
                 });
 
-                // Announcement (шинэ)
-                s.off("announcement:new");
-                s.on("announcement:new", (payload) => {
-                    toast("New announcement", { description: payload?.title || "" });
+                // Announcement handler
+                socket.off("announcement:new");
+                socket.on("announcement:new", (payload) => {
+                    toast("Announcement", {
+                        description: payload?.title || "",
+                    });
                     window.dispatchEvent(new CustomEvent("announce:new", { detail: payload }));
-                    console.log("📢 announcement:new", payload);
                 });
-
-            } catch (e) {
-                console.log("socket init failed", e);
+            } catch (error) {
+                // Silently handle connection errors
             }
-        })();
+        }
+
+        initializeSocket();
 
         return () => {
-            active = false;
+            isMounted = false;
         };
     }, []);
 

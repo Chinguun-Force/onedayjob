@@ -1,65 +1,68 @@
-import NextAuth, { NextAuthOptions } from "next-auth";
-import Credentials from "next-auth/providers/credentials";
+import NextAuth from "next-auth";
+import CredentialsProvider from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 
-export const authOptions:NextAuthOptions = {
-  session: { strategy: "jwt" },
+export const authOptions = {
   providers: [
-    Credentials({
+    CredentialsProvider({
       name: "Credentials",
       credentials: {
         email: { label: "Email", type: "text" },
-        password: { label: "Password", type: "password" },
+        password: { label: "Password", type: "password" }
       },
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) return null;
 
         const user = await prisma.user.findUnique({
-          where: { email: credentials.email },
+          where: { email: credentials.email }
         });
+
         if (!user) return null;
 
-        const ok = await bcrypt.compare(credentials.password, user.passwordHash);
-        if (!ok) return null;
+        const passwordsMatch = await bcrypt.compare(
+          credentials.password, 
+          user.passwordHash
+        );
+
+        if (!passwordsMatch) return null;
 
         return {
           id: user.id,
+          name: user.name,
           email: user.email,
-          name: user.name ?? undefined,
           role: user.role,
-          mustChangePassword: user.mustChangePassword,
-        } as any;
-      },
-    }),
+          mustChangePassword: user.mustChangePassword
+        };
+      }
+    })
   ],
+  session: {
+    strategy: "jwt" as const
+  },
   callbacks: {
     async jwt({ token, user }: any) {
-      // login дээр user орж ирнэ
       if (user) {
         token.id = user.id;
         token.role = user.role;
         token.mustChangePassword = user.mustChangePassword;
-      } else if (token?.id) {
-        // request бүр дээр DB-с refresh хийхийг хүсвэл энд хийж болно (optional)
-        // const db = await prisma.user.findUnique({ where: { id: token.id }, select: { mustChangePassword: true, role: true }});
-        // if (db) { token.mustChangePassword = db.mustChangePassword; token.role = db.role; }
       }
       return token;
     },
     async session({ session, token }: any) {
-      if (session.user) {
+      if (token && session.user) {
         session.user.id = token.id;
         session.user.role = token.role;
         session.user.mustChangePassword = token.mustChangePassword;
       }
       return session;
-    },
+    }
   },
   pages: {
-    signIn: "/auth/signin",
-  },
+    signIn: "/auth/signin"
+  }
 };
 
-const handler = NextAuth(authOptions as any);
+const handler = NextAuth(authOptions);
+
 export { handler as GET, handler as POST };

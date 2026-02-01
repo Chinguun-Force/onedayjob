@@ -4,14 +4,17 @@ import { getToken } from "next-auth/jwt";
 
 const PUBLIC_PATHS = ["/auth/signin"];
 
-function isPublic(pathname: string) {
-  return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + "/"));
+/**
+ * Checks if the given path is publicly accessible
+ */
+function isPublicPath(pathname: string) {
+  return PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(path + "/"));
 }
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // 1) Static / API-г middleware-ээр оролдохгүй
+  // Skip middleware for internal Next.js paths and static files
   if (
     pathname.startsWith("/api") ||
     pathname.startsWith("/_next") ||
@@ -20,85 +23,65 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // ✅ санал: secret-ээ авчих (edge дээр асуудал багасна)
   const token = await getToken({ req });
 
-  // ✅ DEBUG header (next response дээр)
-  const okRes = NextResponse.next();
-  okRes.headers.set("x-has-token", token ? "1" : "0");
-  okRes.headers.set("x-path", pathname);
-
-  // 2) Нэвтрээгүй бол зөвхөн login руу
+  // Handle unauthorized access
   if (!token) {
-    if (isPublic(pathname)) return okRes;
+    if (isPublicPath(pathname)) {
+      return NextResponse.next();
+    }
 
-    const url = req.nextUrl.clone();
-    url.pathname = "/auth/signin";
-    url.searchParams.set("next", pathname);
-
-    const red = NextResponse.redirect(url);
-    red.headers.set("x-has-token", "0");
-    red.headers.set("x-path", pathname);
-    return red;
+    const signInUrl = req.nextUrl.clone();
+    signInUrl.pathname = "/auth/signin";
+    signInUrl.searchParams.set("next", pathname);
+    return NextResponse.redirect(signInUrl);
   }
 
-  const role = (token as any)?.role ?? (token as any)?.user?.role;
-  const mustChangePassword =
-    (token as any)?.mustChangePassword ?? (token as any)?.user?.mustChangePassword;
+  const role = token.role as string | undefined;
+  const mustChangePassword = token.mustChangePassword as boolean | undefined;
 
+  // Force password change if required
   if (mustChangePassword) {
     if (pathname !== "/change-password") {
-      const url = req.nextUrl.clone();
-      url.pathname = "/change-password";
-      const red = NextResponse.redirect(url);
-      red.headers.set("x-has-token", "1");
-      red.headers.set("x-path", pathname);
-      return red;
+      const changePasswordUrl = req.nextUrl.clone();
+      changePasswordUrl.pathname = "/change-password";
+      return NextResponse.redirect(changePasswordUrl);
     }
-    return okRes;
+    return NextResponse.next();
   }
 
+  // Prevent access to change-password if not mandatory
   if (pathname === "/change-password") {
-    const url = req.nextUrl.clone();
-    url.pathname = role === "ADMIN" ? "/admin" : "/employee";
-    const red = NextResponse.redirect(url);
-    red.headers.set("x-has-token", "1");
-    red.headers.set("x-path", pathname);
-    return red;
+    const redirectUrl = req.nextUrl.clone();
+    redirectUrl.pathname = role === "ADMIN" ? "/admin" : "/employee";
+    return NextResponse.redirect(redirectUrl);
   }
 
-  if (pathname.startsWith("/admin")) {
-    if (role !== "ADMIN") {
-      const url = req.nextUrl.clone();
-      url.pathname = "/employee";
-      const red = NextResponse.redirect(url);
-      red.headers.set("x-has-token", "1");
-      red.headers.set("x-path", pathname);
-      return red;
-    }
+  // Role-based protection: Admin paths
+  if (pathname.startsWith("/admin") && role !== "ADMIN") {
+    const employeeUrl = req.nextUrl.clone();
+    employeeUrl.pathname = "/employee";
+    return NextResponse.redirect(employeeUrl);
   }
 
+  // Role-based protection: Employee paths
   if (pathname.startsWith("/employee")) {
-    if (role !== "EMPLOYEE" && role !== "ADMIN") {
-      const url = req.nextUrl.clone();
-      url.pathname = "/auth/signin";
-      const red = NextResponse.redirect(url);
-      red.headers.set("x-has-token", "1");
-      red.headers.set("x-path", pathname);
-      return red;
+    const isAuthorized = role === "EMPLOYEE" || role === "ADMIN";
+    if (!isAuthorized) {
+      const signInUrl = req.nextUrl.clone();
+      signInUrl.pathname = "/auth/signin";
+      return NextResponse.redirect(signInUrl);
     }
   }
 
+  // Default redirect for root path
   if (pathname === "/") {
-    const url = req.nextUrl.clone();
-    url.pathname = role === "ADMIN" ? "/admin" : "/employee";
-    const red = NextResponse.redirect(url);
-    red.headers.set("x-has-token", "1");
-    red.headers.set("x-path", pathname);
-    return red;
+    const dashboardUrl = req.nextUrl.clone();
+    dashboardUrl.pathname = role === "ADMIN" ? "/admin" : "/employee";
+    return NextResponse.redirect(dashboardUrl);
   }
 
-  return okRes;
+  return NextResponse.next();
 }
 
 export const config = {

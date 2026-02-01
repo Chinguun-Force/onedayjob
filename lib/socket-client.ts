@@ -3,52 +3,58 @@
 import { io, Socket } from "socket.io-client";
 
 let socket: Socket | null = null;
-let initializing: Promise<Socket> | null = null;
+let connectionPromise: Promise<Socket> | null = null;
 
+/**
+ * Initializes and returns a singleton socket instance
+ */
 export async function getSocket(): Promise<Socket> {
-  if (socket?.connected) return socket;
-  if (initializing) return initializing;
+  if (socket?.connected) {
+    return socket;
+  }
 
-  initializing = (async () => {
-    const baseUrl = process.env.NEXT_PUBLIC_SOCKET_URL;
+  if (connectionPromise) {
+    return connectionPromise;
+  }
 
-    if (!baseUrl) {
-      throw new Error("NEXT_PUBLIC_SOCKET_URL is missing");
+  connectionPromise = (async () => {
+    const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL;
+
+    if (!socketUrl) {
+      throw new Error("Socket URL is not configured");
     }
 
-    // 1) get token
-    const res = await fetch("/api/socket-token", { cache: "no-store" });
-    const data = await res.json();
+    const response = await fetch("/api/socket-token", { cache: "no-store" });
+    const { token } = await response.json();
 
-    console.log("socket-token:", res.status, data);
-
-    if (!res.ok || !data?.token) {
-      throw new Error("Cannot get socket token");
+    if (!response.ok || !token) {
+      throw new Error("Failed to retrieve socket authentication token");
     }
 
-    // 2) connect
-    const s = io(baseUrl, {
-      auth: { token: data.token },
+    const newSocket = io(socketUrl, {
+      auth: { token },
       transports: ["websocket"],
       reconnection: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 500,
     });
 
-    // ✅ Always log errors
-    s.on("connect", () => console.log("✅ socket connected", s.id));
-    s.on("connect_error", (err) => console.log("❌ connect_error", err?.message || err));
-    s.on("disconnect", (reason) => console.log("⚠️ socket disconnected", reason));
-    s.on("error", (err) => console.log("❌ socket error", err));
+    newSocket.on("connect", () => {
+      console.log("Socket connection established");
+    });
 
-    socket = s;
-    return s;
+    newSocket.on("connect_error", (error) => {
+      console.error("Socket connection error:", error.message || error);
+    });
+
+    socket = newSocket;
+    return newSocket;
   })();
 
   try {
-    return await initializing;
+    return await connectionPromise;
   } finally {
-    initializing = null;
+    connectionPromise = null;
   }
 }
 

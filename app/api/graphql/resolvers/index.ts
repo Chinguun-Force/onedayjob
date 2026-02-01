@@ -4,87 +4,41 @@ import { GraphQLJSON } from "graphql-scalars";
 import { NotificationType } from "@prisma/client";
 import bcrypt from "bcryptjs";
 
-const OTP_PASSWORD = "111111";
-async function createNotificationForRole(prisma: any, input: {
-  type: "NEW_EMPLOYEE_ADDED" | "ANNOUNCEMENT" | string;
-  targetRole: "EMPLOYEE" | "ADMIN" | string;
-  payload?: any;
-}) {
-  // 1) targetRole-оор user-үүдээ олно
-  const users = await prisma.user.findMany({
-    where: { role: input.targetRole },
-    select: { id: true },
-  });
+const DEFAULT_OTP = "111111";
 
-  // 2) Notification үүсгэнэ
-  const notification = await prisma.notification.create({
-    data: {
-      type: input.type,
-      channel: "IN_APP",
-      payloadJson: input.payload ?? null,
-    },
-    select: { id: true },
-  });
-
-  // 3) Recipient-үүд үүсгэнэ
-  if (users.length) {
-    await prisma.notificationRecipient.createMany({
-      data: users.map((u: any) => ({
-        notificationId: notification.id,
-        userId: u.id,
-        status: "UNREAD",
-      })),
-      skipDuplicates: true,
-    });
-  }
-
-  // 4) QueueJob үүсгэнэ (worker чинь уншиж ажиллуулна)
-  await prisma.queueJob.create({
-    data: { notificationId: notification.id },
-  });
-
-  return true;
-}
-async function emitToUser(userId: string, event: string, payload: any) {
-  const socketUrl = process.env.SOCKET_SERVER_URL; // ✅ Vercel env
-  const secret = process.env.SOCKET_SERVER_SECRET; // ✅ Vercel env
-  if (!socketUrl || !secret) return;
-
-  await fetch(`${socketUrl}/emit`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${secret}`, // ✅ server-тэй таарууллаа
-    },
-    body: JSON.stringify({ userId, event, payload }),
-  }).catch(() => {});
-}
-
-async function emitToRoom(room: string, event: string, payload: any) {
+/**
+ * Helper to send socket events via internal API
+ */
+async function sendSocketEvent(path: "emit" | "emit-room", body: object) {
   const socketUrl = process.env.SOCKET_SERVER_URL;
   const secret = process.env.SOCKET_SERVER_SECRET;
+
   if (!socketUrl || !secret) return;
 
-  await fetch(`${socketUrl}/emit-room`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${secret}`, // ✅ server-тэй таарууллаа
-    },
-    body: JSON.stringify({ room, event, payload }),
-  }).catch(() => {});
+  try {
+    await fetch(`${socketUrl}/${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${secret}`,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    // Silent catch for socket errors
+  }
 }
 
 const resolvers = {
   JSON: GraphQLJSON,
 
   Query: {
-    me: async (_: any, __: any, ctx: any) => {
-      const user = ctx.session?.user;
-      if (!user?.id) return null;
+    me: async (_root: any, _args: any, context: any) => {
+      const sessionUser = context.session?.user;
+      if (!sessionUser?.id) return null;
 
       return prisma.user.findUnique({
-        where: { id: user.id },
+        where: { id: sessionUser.id },
         select: {
           id: true,
           email: true,
@@ -98,18 +52,189 @@ const resolvers = {
       });
     },
 
-    users: async (_: any, __: any, ctx: any) => {
-      requireAdmin(ctx);
+    users: async (_root: any, _args: any, context: any) => {
+      requireAdmin(context);
       return prisma.user.findMany({
         select: { id: true, email: true, name: true, role: true },
         orderBy: { createdAt: "desc" },
       });
     },
 
-    adminUsers: async (_: any, __: any, ctx: any) => {
-      requireAdmin(ctx);
+    adminUsers: async (_root: any, _args: any, context: any) => {
+      requireAdmin(context);
       return prisma.user.findMany({
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          role: true,
+          mustChangePassword: true,
+          createdAt: true,
+        },
         orderBy: { createdAt: "desc" },
+      });
+    },
+
+    templates: async (_root: any, _args: any, context: any) => {
+      requireAdmin(context);
+      return prisma.notificationTemplate.findMany({
+        orderBy: { updatedAt: "desc" },
+      });
+    },
+
+    template: async (_root: any, { type }: { type: NotificationType }, context: any) => {
+      requireAdmin(context);
+      return prisma.notificationTemplate.findUnique({
+        where: { type },
+      });
+    },
+
+    myNotifications: async (_root: any, _args: any, context: any) => {
+      const user = requireUser(context);
+      return prisma.notificationRecipient.findMany({
+        where: { userId: user.id },
+        include: { notification: true },
+        orderBy: { createdAt: "desc" },
+      });
+    },
+
+    canSignupAdmin: async () => {
+      const adminCount = await prisma.user.count({
+        where: { role: "ADMIN" },
+      });
+      return adminCount === 0;
+    },
+  },
+
+  Mutation: {
+    upsertTemplate: async (
+      _root: any,
+      { input }: { input: { type: NotificationType; title: string; body: string } },
+      context: any
+    ) => {
+      requireAdmin(context);
+      const { type, title, body } = input;
+
+      return prisma.notificationTemplate.upsert({
+        where: { type },
+        update: { title, body },
+        create: { type, title, body },
+      });
+    },
+
+    deleteTemplate: async (
+      _root: any,
+      { type }: { type: NotificationType },
+      context: any
+    ) => {
+      requireAdmin(context);
+      await prisma.notificationTemplate.delete({ where: { type } });
+      return true;
+    },
+
+    sendNotification: async (
+      _root: any,
+      { input }: { input: { type: NotificationType; targetRole: string; payload?: any } },
+      context: any
+    ) => {
+      const admin = requireAdmin(context);
+      const { type, targetRole, payload } = input;
+
+      const template = await prisma.notificationTemplate.findUnique({ where: { type } });
+      if (!template) throw new Error("Template not found");
+
+      const specificUserIds = payload?.userIds as string[] | undefined;
+      
+      const users = specificUserIds?.length
+        ? await prisma.user.findMany({ where: { id: { in: specificUserIds } }, select: { id: true } })
+        : await prisma.user.findMany({ where: { role: targetRole as any }, select: { id: true } });
+
+      if (users.length === 0) return true;
+
+      const notification = await prisma.notification.create({
+        data: {
+          type,
+          channel: "IN_APP",
+          payloadJson: payload ?? null,
+          createdById: admin.id,
+          recipients: {
+            create: users.map((user: any) => ({ userId: user.id, status: "UNREAD" })),
+          },
+        },
+        select: { id: true },
+      });
+
+      await prisma.queueJob.create({
+        data: { notificationId: notification.id, status: "PENDING" },
+      });
+
+      const messagePayload = {
+        type,
+        title: template.title,
+        message: template.body,
+        payload: payload ?? null,
+        notificationId: notification.id,
+        createdAt: new Date().toISOString(),
+      };
+
+      if (type === "ANNOUNCEMENT" && targetRole === "EMPLOYEE" && !specificUserIds?.length) {
+        await sendSocketEvent("emit-room", { room: "role:EMPLOYEE", event: "notification:new", payload: messagePayload });
+      } else {
+        await Promise.all(
+          users.map((user: any) => 
+            sendSocketEvent("emit", { userId: user.id, event: "notification:new", payload: messagePayload })
+          )
+        );
+      }
+
+      return true;
+    },
+
+    markRead: async (_root: any, { recipientId }: { recipientId: string }, context: any) => {
+      const user = requireUser(context);
+
+      const recipient = await prisma.notificationRecipient.findUnique({
+        where: { id: recipientId },
+      });
+
+      if (!recipient || recipient.userId !== user.id) {
+        throw new Error("Access denied");
+      }
+
+      await prisma.notificationRecipient.update({
+        where: { id: recipientId },
+        data: { status: "READ", readAt: new Date() },
+      });
+
+      return true;
+    },
+
+    markAllRead: async (_root: any, _args: any, context: any) => {
+      const user = requireUser(context);
+
+      const result = await prisma.notificationRecipient.updateMany({
+        where: { userId: user.id, status: "UNREAD" },
+        data: { status: "READ", readAt: new Date() },
+      });
+
+      return result.count;
+    },
+
+    createUser: async (
+      _root: any,
+      { input }: { input: { email: string; role: "ADMIN" | "EMPLOYEE" } },
+      context: any
+    ) => {
+      requireAdmin(context);
+      const hash = await bcrypt.hash(DEFAULT_OTP, 10);
+      
+      const user = await prisma.user.create({
+        data: {
+          email: input.email,
+          role: input.role,
+          passwordHash: hash,
+          mustChangePassword: true,
+        },
         select: {
           id: true,
           email: true,
@@ -119,222 +244,66 @@ const resolvers = {
           createdAt: true,
         },
       });
-    },
 
-    templates: async (_: any, __: any, ctx: any) => {
-      requireAdmin(ctx);
-      return prisma.notificationTemplate.findMany({
-        orderBy: { updatedAt: "desc" },
-      });
-    },
-
-    template: async (_: any, args: { type: string }, ctx: any) => {
-      requireAdmin(ctx);
-      return prisma.notificationTemplate.findUnique({
-        where: { type: args.type as any },
-      });
-    },
-
-    myNotifications: async (_: any, __: any, ctx: any) => {
-      const user = requireUser(ctx) as any;
-      return prisma.notificationRecipient.findMany({
-        where: { userId: user.id },
-        orderBy: { createdAt: "desc" },
-        include: { notification: true },
-      });
-    },
-    canSignupAdmin: async () => {
-    const adminCount = await prisma.user.count({
-      where: { role: "ADMIN" },
-    });
-
-    return adminCount === 0;
-    }
-  },
-
-  Mutation: {
-    upsertTemplate: async (
-    _: any,
-    args: { input: { type: NotificationType; title: string; body: string } },
-    ctx: any
-  ) => {
-    requireAdmin(ctx);
-    const { type, title, body } = args.input;
-
-    return prisma.notificationTemplate.upsert({
-      where: { type },
-      update: { title, body },
-      create: { type, title, body },
-    });
-    },
-
-    deleteTemplate: async (
-      _: any,
-      args: { type: NotificationType },
-      ctx: any
-    ) => {
-      requireAdmin(ctx);
-
-    await prisma.notificationTemplate.delete({
-      where: { type: args.type },
-    });
-
-    return true;
-    },
-
-    sendNotification: async (_: any, args: { input: { type: any; targetRole: any; payload?: any } }, ctx: any) => {
-  const admin = requireAdmin(ctx) as any;
-  const { type, targetRole, payload } = args.input;
-
-  const template = await prisma.notificationTemplate.findUnique({ where: { type } });
-  if (!template) throw new Error("Template not found");
-
-  const ids = payload?.userIds as string[] | undefined;
-
-  const users = ids?.length
-    ? await prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true } })
-    : await prisma.user.findMany({ where: { role: targetRole }, select: { id: true } });
-
-  if (users.length === 0) return true;
-
-  const notification = await prisma.notification.create({
-    data: {
-      type,
-      channel: "IN_APP",
-      payloadJson: payload ?? null,
-      createdById: admin.id,
-      recipients: {
-        create: users.map((u) => ({ userId: u.id, status: "UNREAD" })),
-      },
-    },
-    select: { id: true },
-  });
-
-  await prisma.queueJob.create({
-    data: { notificationId: notification.id, status: "PENDING" },
-  });
-
-  // ✅ REALTIME EMIT (энд нэмэгдэж байгаа)
-  const realtimePayload = {
-    type,
-    title: template.title,
-    message: template.body,
-    payload: payload ?? null,
-    notificationId: notification.id,
-    createdAt: new Date().toISOString(),
-  };
-
-  // Хэрвээ ANNOUNCEMENT + EMPLOYEE бол бүгдэд нь broadcast
-  if (type === "ANNOUNCEMENT" && targetRole === "EMPLOYEE" && !ids?.length) {
-    await emitToRoom("role:EMPLOYEE", "notification:new", realtimePayload);
-  } else {
-    // Эсвэл сонгогдсон хэрэглэгч бүрт нэг нэгээр нь
-    await Promise.all(users.map((u) => emitToUser(u.id, "notification:new", realtimePayload)));
-  }
-
-  return true;
-},
-
-
-    markRead: async (_: any, args: { recipientId: string }, ctx: any) => {
-      const user = requireUser(ctx) as any;
-
-      const row = await prisma.notificationRecipient.findUnique({
-        where: { id: args.recipientId },
-      });
-
-      if (!row || row.userId !== user.id) throw new Error("Forbidden");
-
-      await prisma.notificationRecipient.update({
-        where: { id: args.recipientId },
-        data: { status: "READ", readAt: new Date() },
-      });
-
-      return true;
-    },
-
-    markAllRead: async (_: any, __: any, ctx: any) => {
-      const user = requireUser(ctx) as any;
-
-      const res = await prisma.notificationRecipient.updateMany({
-        where: { userId: user.id, status: "UNREAD" },
-        data: { status: "READ", readAt: new Date() },
-      });
-
-      return res.count;
-    },
-    createUser: async (_: any, args: { input: { email: string; role: "ADMIN" | "EMPLOYEE" } }, ctx: any) => {
-    requireAdmin(ctx);
-    const hash = await bcrypt.hash(OTP_PASSWORD, 10);
-    const user = await prisma.user.create({
-      data: {
-        email: args.input.email,
-        role: args.input.role as any,
-        passwordHash: hash,
-        mustChangePassword: true,
-      },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        mustChangePassword: true,
-        createdAt: true,
-      },
-      });
-      // ✅ Автоматаар NEW_EMPLOYEE_ADDED мэдэгдэл явуулах (зөвхөн EMPLOYEE үүсгэсэн үед)
       if (user.role === "EMPLOYEE") {
-        try {
-          await emitToUser(user.id, "notification:new", {
+        await sendSocketEvent("emit", {
+          userId: user.id,
+          event: "notification:new",
+          payload: {
             type: "NEW_EMPLOYEE_ADDED",
-            title: "New employee added",
-            message: `${user.name ?? user.email} has joined.`,
-          });
-        } catch (e) {
-          console.error("Failed to auto-send NEW_EMPLOYEE_ADDED:", e);
-        }
+            title: "Welcome onboard",
+            message: "Your account has been created successfully.",
+          },
+        });
       }
+
       return user;
     },
 
-    resetUserPassword: async (_: any, args: { userId: string }, ctx: any) => {
-      requireAdmin(ctx);
-      const hash = await bcrypt.hash(OTP_PASSWORD, 10);
+    resetUserPassword: async (_root: any, { userId }: { userId: string }, context: any) => {
+      requireAdmin(context);
+      const hash = await bcrypt.hash(DEFAULT_OTP, 10);
 
       await prisma.user.update({
-        where: { id: args.userId },
+        where: { id: userId },
         data: { passwordHash: hash, mustChangePassword: true },
       });
 
       return true;
     },
 
-    forceResetPassword: async (_: any, args: { userId: string }, ctx: any) => {
-      requireAdmin(ctx);
-      const otpHash = await bcrypt.hash(OTP_PASSWORD, 10);
+    forceResetPassword: async (_root: any, { userId }: { userId: string }, context: any) => {
+      requireAdmin(context);
+      const hash = await bcrypt.hash(DEFAULT_OTP, 10);
 
       await prisma.user.update({
-        where: { id: args.userId },
-        data: { passwordHash: otpHash, mustChangePassword: true },
+        where: { id: userId },
+        data: { passwordHash: hash, mustChangePassword: true },
       });
 
       return true;
     },
-    changeMyPassword: async (_: any, args: { oldPassword: string; newPassword: string }, ctx: any) => {
-      const user = requireUser(ctx) as any;
+
+    changeMyPassword: async (
+      _root: any,
+      { oldPassword, newPassword }: { oldPassword: string; newPassword: string },
+      context: any
+    ) => {
+      const user = requireUser(context);
 
       const dbUser = await prisma.user.findUnique({
         where: { id: user.id },
         select: { passwordHash: true },
       });
+
       if (!dbUser) throw new Error("User not found");
 
-      const ok = await bcrypt.compare(args.oldPassword, dbUser.passwordHash);
-      if (!ok) throw new Error("Wrong password");
+      const isMatch = await bcrypt.compare(oldPassword, dbUser.passwordHash);
+      if (!isMatch) throw new Error("Incorrect current password");
 
-      if (args.newPassword.length < 8) throw new Error("Password must be at least 8 characters");
+      if (newPassword.length < 8) throw new Error("New password too short");
 
-      const newHash = await bcrypt.hash(args.newPassword, 10);
+      const newHash = await bcrypt.hash(newPassword, 10);
 
       await prisma.user.update({
         where: { id: user.id },
@@ -347,34 +316,28 @@ const resolvers = {
 
       return true;
     },
+
     bootstrapAdminSignup: async (
-  _: any,
-  args: { email: string; password: string },
-) => {
-  const adminCount = await prisma.user.count({
-    where: { role: "ADMIN" },
-  });
+      _root: any,
+      { email, password }: { email: string; password: string }
+    ) => {
+      const adminCount = await prisma.user.count({ where: { role: "ADMIN" } });
+      if (adminCount > 0) throw new Error("Admin already exists");
 
-  if (adminCount > 0) {
-    throw new Error("Admin already exists");
-  }
+      if (password.length < 8) throw new Error("Password too short");
 
-  if (args.password.length < 8) {
-    throw new Error("Password too short");
-  }
+      const hash = await bcrypt.hash(password, 10);
 
-  const hash = await bcrypt.hash(args.password, 10);
+      await prisma.user.create({
+        data: {
+          email,
+          passwordHash: hash,
+          role: "ADMIN",
+          mustChangePassword: false,
+        },
+      });
 
-  await prisma.user.create({
-    data: {
-      email: args.email,
-      passwordHash: hash,
-      role: "ADMIN",
-      mustChangePassword: false,
-    },
-  });
-
-  return true;
+      return true;
     },
   },
 };
