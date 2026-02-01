@@ -10,6 +10,7 @@ const client = new ApolloClient({
     uri: "/api/graphql",
     cache: new InMemoryCache(),
 });
+
 export function Providers({ children }: { children: React.ReactNode }) {
     useEffect(() => {
         let active = true;
@@ -19,19 +20,23 @@ export function Providers({ children }: { children: React.ReactNode }) {
                 const s = await getSocket();
                 if (!active) return;
 
-                s.on("connect", () => console.log("socket connected"));
-                s.on("disconnect", () => console.log("socket disconnected"));
-
-                // шинэ notification ирэхэд
+                // Notification
+                s.off("notification:new"); // prevent duplicate listeners
                 s.on("notification:new", (payload) => {
-                    // payload: { title, message, type, ... }
                     toast(payload?.title || "New notification", {
                         description: payload?.message || payload?.body || "",
                     });
-
-                    // хүсвэл global event dispatch хийгээд badge update хийж болно
                     window.dispatchEvent(new CustomEvent("notif:new", { detail: payload }));
                 });
+
+                // Announcement (шинэ)
+                s.off("announcement:new");
+                s.on("announcement:new", (payload) => {
+                    toast("New announcement", { description: payload?.title || "" });
+                    window.dispatchEvent(new CustomEvent("announce:new", { detail: payload }));
+                    console.log("📢 announcement:new", payload);
+                });
+
             } catch (e) {
                 console.log("socket init failed", e);
             }
@@ -41,6 +46,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
             active = false;
         };
     }, []);
+
     return (
         <ApolloProvider client={client}>
             <SessionProvider>{children}</SessionProvider>

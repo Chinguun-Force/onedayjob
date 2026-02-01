@@ -3,18 +3,58 @@
 import { io, Socket } from "socket.io-client";
 
 let socket: Socket | null = null;
+let initializing: Promise<Socket> | null = null;
 
 export async function getSocket(): Promise<Socket> {
-  if (socket && socket.connected) return socket;
+  if (socket?.connected) return socket;
+  if (initializing) return initializing;
 
-  const res = await fetch("/api/socket-token");
-  if (!res.ok) throw new Error("Cannot get socket token");
-  const { token } = await res.json();
+  initializing = (async () => {
+    const baseUrl = process.env.NEXT_PUBLIC_SOCKET_URL;
 
-  socket = io(process.env.NEXT_PUBLIC_SOCKET_URL!, {
-    auth: { token },
-    transports: ["websocket"],
-  });
+    if (!baseUrl) {
+      throw new Error("NEXT_PUBLIC_SOCKET_URL is missing");
+    }
 
-  return socket;
+    // 1) get token
+    const res = await fetch("/api/socket-token", { cache: "no-store" });
+    const data = await res.json();
+
+    console.log("socket-token:", res.status, data);
+
+    if (!res.ok || !data?.token) {
+      throw new Error("Cannot get socket token");
+    }
+
+    // 2) connect
+    const s = io(baseUrl, {
+      auth: { token: data.token },
+      transports: ["websocket"],
+      reconnection: true,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 500,
+    });
+
+    // ✅ Always log errors
+    s.on("connect", () => console.log("✅ socket connected", s.id));
+    s.on("connect_error", (err) => console.log("❌ connect_error", err?.message || err));
+    s.on("disconnect", (reason) => console.log("⚠️ socket disconnected", reason));
+    s.on("error", (err) => console.log("❌ socket error", err));
+
+    socket = s;
+    return s;
+  })();
+
+  try {
+    return await initializing;
+  } finally {
+    initializing = null;
+  }
+}
+
+export function disconnectSocket() {
+  if (socket) {
+    socket.disconnect();
+    socket = null;
+  }
 }
