@@ -5,7 +5,59 @@ import { NotificationType } from "@prisma/client";
 import bcrypt from "bcryptjs";
 
 const OTP_PASSWORD = "111111";
+async function createNotificationForRole(prisma: any, input: {
+  type: "NEW_EMPLOYEE_ADDED" | "ANNOUNCEMENT" | string;
+  targetRole: "EMPLOYEE" | "ADMIN" | string;
+  payload?: any;
+}) {
+  // 1) targetRole-оор user-үүдээ олно
+  const users = await prisma.user.findMany({
+    where: { role: input.targetRole },
+    select: { id: true },
+  });
 
+  // 2) Notification үүсгэнэ
+  const notification = await prisma.notification.create({
+    data: {
+      type: input.type,
+      channel: "IN_APP",
+      payloadJson: input.payload ?? null,
+    },
+    select: { id: true },
+  });
+
+  // 3) Recipient-үүд үүсгэнэ
+  if (users.length) {
+    await prisma.notificationRecipient.createMany({
+      data: users.map((u: any) => ({
+        notificationId: notification.id,
+        userId: u.id,
+        status: "UNREAD",
+      })),
+      skipDuplicates: true,
+    });
+  }
+
+  // 4) QueueJob үүсгэнэ (worker чинь уншиж ажиллуулна)
+  await prisma.queueJob.create({
+    data: { notificationId: notification.id },
+  });
+
+  return true;
+}
+async function emitToUser(userId: string, event: string, payload: any) {
+  const socketUrl = process.env.SOCKET_URL; // https://...railway.app
+  if (!socketUrl) return;
+
+  await fetch(`${socketUrl}/emit`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-internal-token": process.env.SOCKET_INTERNAL_TOKEN!,
+    },
+    body: JSON.stringify({ userId, event, payload }),
+  }).catch(() => {});
+}
 const resolvers = {
   JSON: GraphQLJSON,
 
@@ -174,27 +226,38 @@ const resolvers = {
 
       return res.count;
     },
-
     createUser: async (_: any, args: { input: { email: string; role: "ADMIN" | "EMPLOYEE" } }, ctx: any) => {
-      requireAdmin(ctx);
-      const hash = await bcrypt.hash(OTP_PASSWORD, 10);
-
-      return prisma.user.create({
-        data: {
-          email: args.input.email,
-          role: args.input.role as any,
-          passwordHash: hash,
-          mustChangePassword: true,
-        },
-        select: {
-          id: true,
-          email: true,
-          name: true,
-          role: true,
-          mustChangePassword: true,
-          createdAt: true,
-        },
+    requireAdmin(ctx);
+    const hash = await bcrypt.hash(OTP_PASSWORD, 10);
+    const user = await prisma.user.create({
+      data: {
+        email: args.input.email,
+        role: args.input.role as any,
+        passwordHash: hash,
+        mustChangePassword: true,
+      },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        mustChangePassword: true,
+        createdAt: true,
+      },
       });
+      // ✅ Автоматаар NEW_EMPLOYEE_ADDED мэдэгдэл явуулах (зөвхөн EMPLOYEE үүсгэсэн үед)
+      if (user.role === "EMPLOYEE") {
+        try {
+          await emitToUser(user.id, "notification:new", {
+            type: "NEW_EMPLOYEE_ADDED",
+            title: "New employee added",
+            message: `${user.name ?? user.email} has joined.`,
+          });
+        } catch (e) {
+          console.error("Failed to auto-send NEW_EMPLOYEE_ADDED:", e);
+        }
+      }
+      return user;
     },
 
     resetUserPassword: async (_: any, args: { userId: string }, ctx: any) => {
@@ -275,7 +338,7 @@ const resolvers = {
   });
 
   return true;
-}
+    },
   },
 };
 

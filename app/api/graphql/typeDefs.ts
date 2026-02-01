@@ -86,12 +86,6 @@ export const typeDefs = `#graphql
     role: Role!
   }
 
-  input AddUserInput {
-    email: String!
-    name: String
-    role: Role!
-  }
-
   type Query {
     me: User
     adminUsers: [AdminUser!]!
@@ -106,7 +100,6 @@ export const typeDefs = `#graphql
     upsertTemplate(input: UpsertTemplateInput!): NotificationTemplate!
     deleteTemplate(type: NotificationType!): Boolean!
     createUser(input: CreateUserInput!): AdminUser!
-    addUser(input: AddUserInput!): Boolean!
     resetUserPassword(userId: ID!): Boolean!
     forceResetPassword(userId: ID!): Boolean!
     sendNotification(input: SendNotificationInput!): Boolean!

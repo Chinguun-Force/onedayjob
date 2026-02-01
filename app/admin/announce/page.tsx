@@ -1,120 +1,90 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
+import { useState } from "react";
 import { toast } from "sonner";
 
-export default function AdminAnnouncePage() {
-    const [templates, setTemplates] = useState<any[]>([]);
-    const [users, setUsers] = useState<any[]>([]);
-    const [template, setTemplate] = useState("");
-    const [sendAll, setSendAll] = useState(true);
-    const [selected, setSelected] = useState<string[]>([]);
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 
-    useEffect(() => {
-        fetch("/api/graphql", {
+export default function AdminAnnouncePage() {
+    const [title, setTitle] = useState("");
+    const [message, setMessage] = useState("");
+    const [sendToAll, setSendToAll] = useState(true);
+    const [loading, setLoading] = useState(false);
+
+    async function send() {
+        if (!title || !message) {
+            toast.error("Title and message required");
+            return;
+        }
+
+        setLoading(true);
+
+        const res = await fetch("/api/graphql", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 query: `
-          query {
-            templates { type title }
-            adminUsers { id email role }
-          }
-        `,
-            }),
-        })
-            .then(r => r.json())
-            .then(res => {
-                setTemplates(res.data.templates);
-                setUsers(res.data.adminUsers.filter((u: any) => u.role === "EMPLOYEE"));
-            });
-    }, []);
-
-    async function send() {
-        const toastId = toast.loading("Sending notification...");
-
-        try {
-            const res = await fetch("/api/graphql", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    query: `
-          mutation ($input: SendNotificationInput!) {
+          mutation SendAnnounce($input: SendNotificationInput!) {
             sendNotification(input: $input)
           }
         `,
-                    variables: {
-                        input: {
-                            type: template,                 // <-- state-ээсээ авна
-                            targetRole: "EMPLOYEE",
-                            payload: sendAll ? null : { userIds: selected },
+                variables: {
+                    input: {
+                        type: "ANNOUNCEMENT",
+                        targetRole: "EMPLOYEE",
+                        payload: {
+                            title,
+                            message,
                         },
                     },
-                }),
-            });
+                },
+            }),
+        }).then((r) => r.json());
 
-            const json = await res.json();
-
-            if (json.errors?.length) {
-                toast.error(json.errors[0].message, { id: toastId });
-                return;
-            }
-
-            toast.success("Queued ✅", { id: toastId });
-        } catch (e: any) {
-            toast.error(e?.message ?? "Something went wrong", { id: toastId });
+        if (res.errors) {
+            toast.error(res.errors[0].message);
+            setLoading(false);
+            return;
         }
+
+        toast.success("Announcement sent 🎉");
+        setTitle("");
+        setMessage("");
+        setLoading(false);
     }
 
     return (
-        <div className="max-w-3xl mx-auto py-8 space-y-6">
-            <h1 className="text-xl font-semibold">Send announcement</h1>
-
+        <div className="max-w-xl mx-auto py-10">
             <Card>
-                <CardContent className="p-4 space-y-4">
-                    <select
-                        className="border px-2 py-1 w-full"
-                        value={template}
-                        onChange={(e) => setTemplate(e.target.value)}
-                    >
-                        <option value="">Select template</option>
-                        {templates.map(t => (
-                            <option key={t.type} value={t.type}>
-                                {t.title}
-                            </option>
-                        ))}
-                    </select>
+                <CardContent className="space-y-4 p-6">
+                    <h1 className="text-xl font-semibold">Send Announcement</h1>
 
-                    <label className="flex items-center gap-2">
-                        <Checkbox checked={sendAll} onCheckedChange={() => setSendAll(!sendAll)} />
-                        Send to all employees
-                    </label>
+                    <div className="space-y-1">
+                        <Label>Title</Label>
+                        <Input value={title} onChange={(e) => setTitle(e.target.value)} />
+                    </div>
 
-                    {!sendAll && (
-                        <div className="space-y-2">
-                            {users.map(u => (
-                                <label key={u.id} className="flex gap-2 items-center">
-                                    <Checkbox
-                                        checked={selected.includes(u.id)}
-                                        onCheckedChange={() =>
-                                            setSelected(prev =>
-                                                prev.includes(u.id)
-                                                    ? prev.filter(x => x !== u.id)
-                                                    : [...prev, u.id]
-                                            )
-                                        }
-                                    />
-                                    {u.email}
-                                </label>
-                            ))}
-                        </div>
-                    )}
+                    <div className="space-y-1">
+                        <Label>Message</Label>
+                        <Textarea
+                            rows={5}
+                            value={message}
+                            onChange={(e) => setMessage(e.target.value)}
+                        />
+                    </div>
 
-                    <Button disabled={!template} onClick={send}>
-                        Send
+                    <div className="flex items-center space-x-2">
+                        <Checkbox checked disabled />
+                        <Label>Send to all employees</Label>
+                    </div>
+
+                    <Button onClick={send} disabled={loading} className="w-full">
+                        {loading ? "Sending..." : "Send announcement"}
                     </Button>
                 </CardContent>
             </Card>

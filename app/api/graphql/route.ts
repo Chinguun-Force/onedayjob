@@ -5,11 +5,16 @@ import { authOptions } from "../auth/[...nextauth]/route"; // доор authOptio
 import { typeDefs } from "./typeDefs";
 import resolvers from "./resolvers";
 import { startQueuePoller } from "@/lib/queuePoller";
-
+import {ensureTemplates} from "./ensureTemplates";
 
 const server = new ApolloServer({ typeDefs, resolvers });
+let didEnsure = false;
 const handler = startServerAndCreateNextHandler(server, {
   context: async () => {
+    if(!didEnsure){
+      didEnsure = true;
+      await ensureTemplates();
+    }
     const session = await getServerSession(authOptions);
     return { session };
   },
