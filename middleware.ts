@@ -4,17 +4,20 @@ import { getToken } from "next-auth/jwt";
 
 const PUBLIC_PATHS = ["/auth/signin"];
 
-/**
- * Checks if the given path is publicly accessible
- */
 function isPublicPath(pathname: string) {
-  return PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(path + "/"));
+  return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + "/"));
+}
+
+function redirect(req: NextRequest, pathname: string) {
+  const url = req.nextUrl.clone();
+  url.pathname = pathname;
+  return NextResponse.redirect(url);
 }
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // Skip middleware for internal Next.js paths and static files
+  // Skip internal/static
   if (
     pathname.startsWith("/api") ||
     pathname.startsWith("/_next") ||
@@ -23,62 +26,77 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  const token = await getToken({ req });
+  // ✅ IMPORTANT: secret заавал дамжуул
+  const token = await getToken({
+    req,
+    secret: process.env.NEXTAUTH_SECRET,
+  });
 
-  // Handle unauthorized access
+  // Not signed in -> allow public only
   if (!token) {
-    if (isPublicPath(pathname)) {
-      return NextResponse.next();
-    }
+    if (isPublicPath(pathname)) return NextResponse.next();
 
-    const signInUrl = req.nextUrl.clone();
-    signInUrl.pathname = "/auth/signin";
-    signInUrl.searchParams.set("next", pathname);
-    return NextResponse.redirect(signInUrl);
+    const url = req.nextUrl.clone();
+    url.pathname = "/auth/signin";
+    url.searchParams.set("next", pathname);
+    return NextResponse.redirect(url);
   }
 
-  const role = token.role as string | undefined;
-  const mustChangePassword = token.mustChangePassword as boolean | undefined;
+  // ✅ role, mustChangePassword-г олон хувилбараар уншина
+  const role =
+    (token as any)?.role ??
+    (token as any)?.user?.role ??
+    (token as any)?.session?.user?.role;
 
-  // Force password change if required
+  const mustChangePassword =
+    (token as any)?.mustChangePassword ??
+    (token as any)?.user?.mustChangePassword ??
+    false;
+
+  // ✅ Role уншигдахгүй бол cookie/secret mismatch гэсэн үг. Safe-ээр signin руу
+  if (!role) {
+    const url = req.nextUrl.clone();
+    url.pathname = "/auth/signin";
+    url.searchParams.set("next", pathname);
+    return NextResponse.redirect(url);
+  }
+
+  // Force password change
   if (mustChangePassword) {
-    if (pathname !== "/change-password") {
-      const changePasswordUrl = req.nextUrl.clone();
-      changePasswordUrl.pathname = "/change-password";
-      return NextResponse.redirect(changePasswordUrl);
-    }
+    if (pathname !== "/change-password") return redirect(req, "/change-password");
     return NextResponse.next();
   }
 
-  // Prevent access to change-password if not mandatory
+  // If password change not required, block change-password
   if (pathname === "/change-password") {
-    const redirectUrl = req.nextUrl.clone();
-    redirectUrl.pathname = role === "ADMIN" ? "/admin" : "/employee";
-    return NextResponse.redirect(redirectUrl);
+    return redirect(req, role === "ADMIN" ? "/admin" : "/employee");
   }
 
-  // Role-based protection: Admin paths
-  if (pathname.startsWith("/admin") && role !== "ADMIN") {
-    const employeeUrl = req.nextUrl.clone();
-    employeeUrl.pathname = "/employee";
-    return NextResponse.redirect(employeeUrl);
-  }
-
-  // Role-based protection: Employee paths
-  if (pathname.startsWith("/employee")) {
-    const isAuthorized = role === "EMPLOYEE" || role === "ADMIN";
-    if (!isAuthorized) {
-      const signInUrl = req.nextUrl.clone();
-      signInUrl.pathname = "/auth/signin";
-      return NextResponse.redirect(signInUrl);
-    }
-  }
-
-  // Default redirect for root path
+  // Root -> role home
   if (pathname === "/") {
-    const dashboardUrl = req.nextUrl.clone();
-    dashboardUrl.pathname = role === "ADMIN" ? "/admin" : "/employee";
-    return NextResponse.redirect(dashboardUrl);
+    return redirect(req, role === "ADMIN" ? "/admin" : "/employee");
+  }
+
+  // -------------------------------
+  // Strict role routing (UX fix)
+  // -------------------------------
+  if (role === "ADMIN" && pathname.startsWith("/employee")) {
+    return redirect(req, "/admin");
+  }
+
+  if (role === "EMPLOYEE" && pathname.startsWith("/admin")) {
+    return redirect(req, "/employee");
+  }
+
+  // -------------------------------
+  // Authorization guards (strict)
+  // -------------------------------
+  if (pathname.startsWith("/admin") && role !== "ADMIN") {
+    return redirect(req, "/employee");
+  }
+
+  if (pathname.startsWith("/employee") && role !== "EMPLOYEE") {
+    return redirect(req, "/auth/signin");
   }
 
   return NextResponse.next();

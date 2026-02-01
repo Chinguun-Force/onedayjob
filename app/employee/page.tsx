@@ -5,7 +5,7 @@ export default function EmployeeHome() {
         <div style={{ padding: 24 }}>
             <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <h1>Employee Home</h1>
-                <LogoutButton />
+                {/* <LogoutButton /> */}
             </div>
 
             <p>Your notifications and profile</p>
