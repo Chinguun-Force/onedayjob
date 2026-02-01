@@ -46,18 +46,35 @@ async function createNotificationForRole(prisma: any, input: {
   return true;
 }
 async function emitToUser(userId: string, event: string, payload: any) {
-  const socketUrl = process.env.SOCKET_URL; // https://...railway.app
-  if (!socketUrl) return;
+  const socketUrl = process.env.SOCKET_SERVER_URL; // ✅ Vercel env
+  const secret = process.env.SOCKET_SERVER_SECRET; // ✅ Vercel env
+  if (!socketUrl || !secret) return;
 
   await fetch(`${socketUrl}/emit`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-internal-token": process.env.SOCKET_INTERNAL_TOKEN!,
+      Authorization: `Bearer ${secret}`, // ✅ server-тэй таарууллаа
     },
     body: JSON.stringify({ userId, event, payload }),
   }).catch(() => {});
 }
+
+async function emitToRoom(room: string, event: string, payload: any) {
+  const socketUrl = process.env.SOCKET_SERVER_URL;
+  const secret = process.env.SOCKET_SERVER_SECRET;
+  if (!socketUrl || !secret) return;
+
+  await fetch(`${socketUrl}/emit-room`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${secret}`, // ✅ server-тэй таарууллаа
+    },
+    body: JSON.stringify({ room, event, payload }),
+  }).catch(() => {});
+}
+
 const resolvers = {
   JSON: GraphQLJSON,
 
@@ -166,38 +183,58 @@ const resolvers = {
     },
 
     sendNotification: async (_: any, args: { input: { type: any; targetRole: any; payload?: any } }, ctx: any) => {
-      const admin = requireAdmin(ctx) as any;
-      const { type, targetRole, payload } = args.input;
+  const admin = requireAdmin(ctx) as any;
+  const { type, targetRole, payload } = args.input;
 
-      const template = await prisma.notificationTemplate.findUnique({ where: { type } });
-      if (!template) throw new Error("Template not found");
+  const template = await prisma.notificationTemplate.findUnique({ where: { type } });
+  if (!template) throw new Error("Template not found");
 
-      const ids = payload?.userIds as string[] | undefined;
+  const ids = payload?.userIds as string[] | undefined;
 
-      const users = ids?.length
-        ? await prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true } })
-        : await prisma.user.findMany({ where: { role: targetRole }, select: { id: true } });
+  const users = ids?.length
+    ? await prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true } })
+    : await prisma.user.findMany({ where: { role: targetRole }, select: { id: true } });
 
-      if (users.length === 0) return true;
+  if (users.length === 0) return true;
 
-      const notification = await prisma.notification.create({
-        data: {
-          type,
-          channel: "IN_APP",
-          payloadJson: payload ?? null,
-          createdById: admin.id,
-          recipients: {
-            create: users.map((u) => ({ userId: u.id, status: "UNREAD" })),
-          },
-        },
-      });
-
-      await prisma.queueJob.create({
-        data: { notificationId: notification.id, status: "PENDING" },
-      });
-
-      return true;
+  const notification = await prisma.notification.create({
+    data: {
+      type,
+      channel: "IN_APP",
+      payloadJson: payload ?? null,
+      createdById: admin.id,
+      recipients: {
+        create: users.map((u) => ({ userId: u.id, status: "UNREAD" })),
+      },
     },
+    select: { id: true },
+  });
+
+  await prisma.queueJob.create({
+    data: { notificationId: notification.id, status: "PENDING" },
+  });
+
+  // ✅ REALTIME EMIT (энд нэмэгдэж байгаа)
+  const realtimePayload = {
+    type,
+    title: template.title,
+    message: template.body,
+    payload: payload ?? null,
+    notificationId: notification.id,
+    createdAt: new Date().toISOString(),
+  };
+
+  // Хэрвээ ANNOUNCEMENT + EMPLOYEE бол бүгдэд нь broadcast
+  if (type === "ANNOUNCEMENT" && targetRole === "EMPLOYEE" && !ids?.length) {
+    await emitToRoom("role:EMPLOYEE", "notification:new", realtimePayload);
+  } else {
+    // Эсвэл сонгогдсон хэрэглэгч бүрт нэг нэгээр нь
+    await Promise.all(users.map((u) => emitToUser(u.id, "notification:new", realtimePayload)));
+  }
+
+  return true;
+},
+
 
     markRead: async (_: any, args: { recipientId: string }, ctx: any) => {
       const user = requireUser(ctx) as any;
