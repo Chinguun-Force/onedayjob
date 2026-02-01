@@ -20,45 +20,61 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
+  // ✅ санал: secret-ээ авчих (edge дээр асуудал багасна)
+  const token = await getToken({ req });
+
+  // ✅ DEBUG header (next response дээр)
+  const okRes = NextResponse.next();
+  okRes.headers.set("x-has-token", token ? "1" : "0");
+  okRes.headers.set("x-path", pathname);
 
   // 2) Нэвтрээгүй бол зөвхөн login руу
   if (!token) {
-    if (isPublic(pathname)) return NextResponse.next();
+    if (isPublic(pathname)) return okRes;
+
     const url = req.nextUrl.clone();
     url.pathname = "/auth/signin";
     url.searchParams.set("next", pathname);
-    return NextResponse.redirect(url);
+
+    const red = NextResponse.redirect(url);
+    red.headers.set("x-has-token", "0");
+    red.headers.set("x-path", pathname);
+    return red;
   }
 
-  // token доторх user info
   const role = (token as any)?.role ?? (token as any)?.user?.role;
   const mustChangePassword =
     (token as any)?.mustChangePassword ?? (token as any)?.user?.mustChangePassword;
 
-  // 3) mustChangePassword=true бол зөвхөн /change-password руу явна
   if (mustChangePassword) {
     if (pathname !== "/change-password") {
       const url = req.nextUrl.clone();
       url.pathname = "/change-password";
-      return NextResponse.redirect(url);
+      const red = NextResponse.redirect(url);
+      red.headers.set("x-has-token", "1");
+      red.headers.set("x-path", pathname);
+      return red;
     }
-    return NextResponse.next();
+    return okRes;
   }
 
-  // 4) mustChangePassword=false болсон үед /change-password руу оруулахгүй
   if (pathname === "/change-password") {
     const url = req.nextUrl.clone();
     url.pathname = role === "ADMIN" ? "/admin" : "/employee";
-    return NextResponse.redirect(url);
+    const red = NextResponse.redirect(url);
+    red.headers.set("x-has-token", "1");
+    red.headers.set("x-path", pathname);
+    return red;
   }
 
-  // 5) Role-based хамгаалалт
   if (pathname.startsWith("/admin")) {
     if (role !== "ADMIN") {
       const url = req.nextUrl.clone();
       url.pathname = "/employee";
-      return NextResponse.redirect(url);
+      const red = NextResponse.redirect(url);
+      red.headers.set("x-has-token", "1");
+      red.headers.set("x-path", pathname);
+      return red;
     }
   }
 
@@ -66,18 +82,23 @@ export async function middleware(req: NextRequest) {
     if (role !== "EMPLOYEE" && role !== "ADMIN") {
       const url = req.nextUrl.clone();
       url.pathname = "/auth/signin";
-      return NextResponse.redirect(url);
+      const red = NextResponse.redirect(url);
+      red.headers.set("x-has-token", "1");
+      red.headers.set("x-path", pathname);
+      return red;
     }
   }
 
-  // 6) Root дээр default redirect
   if (pathname === "/") {
     const url = req.nextUrl.clone();
     url.pathname = role === "ADMIN" ? "/admin" : "/employee";
-    return NextResponse.redirect(url);
+    const red = NextResponse.redirect(url);
+    red.headers.set("x-has-token", "1");
+    red.headers.set("x-path", pathname);
+    return red;
   }
 
-  return NextResponse.next();
+  return okRes;
 }
 
 export const config = {
